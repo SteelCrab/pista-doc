@@ -52,6 +52,72 @@
   - 실행 중인 Ubuntu에서 단순 확장 불가
   - Live USB에서 root 파티션 시작점을 왼쪽으로 이동 필요
 
+## 아키텍처
+
+### 디스크 구조 변경
+
+- 각 행은 디스크의 낮은 주소에서 높은 주소 순서
+- 연결선은 파티션의 물리적 배치 순서 표시
+- 도형 너비는 실제 용량 비율과 무관
+- 최종 root 파티션 크기: 약 476.7 GiB 예상
+- `df`에 표시되는 파일시스템 용량은 메타데이터 등으로 파티션 크기보다 작을 수 있음
+
+```mermaid
+flowchart TB
+    subgraph before["현재: /dev/nvme0n1 · GPT"]
+        direction LR
+        p1["p1 · EFI<br/>200 MiB · 유지"] --> p2["p2 · MSR<br/>16 MiB · 삭제"]
+        p2 --> p3["p3 · Windows<br/>약 183 GiB · 삭제"]
+        p3 --> p5["p5 · Ubuntu root<br/>약 293 GiB · 유지"]
+        p5 --> p4["p4 · Windows 복구<br/>762 MiB · 삭제"]
+    end
+    subgraph freed["Windows 파티션 삭제 후"]
+        direction LR
+        efi["p1 · EFI<br/>유지"] --> left["앞쪽 미할당 공간<br/>기존 p2 + p3"]
+        left --> root["p5 · Ubuntu root<br/>이동 및 확장 대상"]
+        root --> right["뒤쪽 미할당 공간<br/>기존 p4"]
+    end
+    subgraph after["작업 완료 후"]
+        direction LR
+        finalefi["p1 · EFI<br/>200 MiB · 유지"] --> finalroot["p5 · Ubuntu root · ext4<br/>약 476.7 GiB · 마운트 지점 /"]
+    end
+    before -->|"p2 · p3 · p4 삭제"| freed
+    freed -->|"Live USB에서 p5를 왼쪽으로 이동하고 확장"| after
+```
+
+### Ubuntu 부팅 구조
+
+- UEFI의 Ubuntu 항목이 `p1`의 부트로더 실행
+- Ubuntu 부트로더가 `p5`의 커널과 initramfs 로드
+- 부팅 과정에서 `p5`의 ext4 파일시스템을 root(`/`)로 마운트
+- Windows 제거 후에도 `p1`과 Ubuntu 부트 파일 유지 필요
+
+```mermaid
+flowchart LR
+    firmware["UEFI 펌웨어"] --> entry["Ubuntu 부트 항목"]
+    entry --> shim["p1 · EFI 시스템 파티션<br/>EFI/ubuntu/shimx64.efi"]
+    shim --> grub["Ubuntu GRUB"]
+    grub --> kernel["p5의 /boot<br/>Linux 커널 + initramfs"]
+    kernel --> rootfs["p5 · ext4<br/>root / 마운트"]
+```
+
+### 작업 실행 흐름
+
+- 설치된 Ubuntu root를 이동하는 작업은 Live USB에서 수행
+- 완료 후 설치된 Ubuntu로 부팅하여 용량 및 부트 메뉴 검증
+
+```mermaid
+flowchart TD
+    backup["외부 저장소에 데이터 백업"] --> live["UEFI Live USB 부팅"]
+    live --> check["대상 디스크 및 p5 마운트 해제 상태 확인"]
+    check --> remove["GParted: p2 · p3 · p4 삭제 예약"]
+    remove --> resize["GParted: p5 이동 및 확장 예약"]
+    resize --> apply["예약 작업 확인 후 적용"]
+    apply --> reboot["Ubuntu로 재부팅"]
+    reboot --> verify["root 용량 및 데이터 확인"]
+    verify --> boot["GRUB 갱신 및 Windows UEFI 항목 정리"]
+```
+
 ## 삭제 및 유지 대상
 
 ### 삭제 대상
